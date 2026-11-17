@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sémaphore – transfert de fichier par QR codes</title>
+<style>
+  :root { color-scheme: light dark; --accent: #2a6df4; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 12px; max-width: 760px; margin-inline: auto; }
+  h1 { font-size: 1.2rem; margin: 4px 0 12px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+  .tabs button { flex: 1; padding: 10px; font-size: 1rem; border: 1px solid #8886; background: transparent; color: inherit; border-radius: 8px; cursor: pointer; }
+  .tabs button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .panel { display: none; }
+  .panel.on { display: block; }
+  .row { display: grid; grid-template-columns: 11rem 1fr; gap: 8px; align-items: center; margin: 8px 0; }
+  .row input[type=number], .row input[type=file] { width: 100%; }
+  button.act { padding: 10px 16px; font-size: 1rem; border-radius: 8px; border: 0; background: var(--accent); color: #fff; cursor: pointer; margin: 6px 6px 6px 0; }
+  button.act.sec { background: #8886; color: inherit; }
+  button.act:disabled { opacity: .4; cursor: default; }
+  .stage { background: #fff; display: flex; justify-content: center; border-radius: 8px; padding: 6px; margin-top: 10px; }
+  #qrCanvas { width: min(100%, 70vh); height: auto; image-rendering: pixelated; }
+  #video { width: 100%; border-radius: 8px; background: #000; max-height: 55vh; object-fit: contain; }
+  .bar { height: 14px; background: #8883; border-radius: 7px; overflow: hidden; margin: 10px 0 4px; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .1s; }
+  .status { font-size: .95rem; min-height: 1.4em; }
+  .err { color: #d33; }
+  .hint { font-size: .85rem; opacity: .7; }
+  a.dl { display: inline-block; margin-top: 8px; padding: 12px 18px; background: #1a9b4b; color: #fff; border-radius: 8px; text-decoration: none; font-size: 1.05rem; }
+</style>
+</head>
+<body>
+<h1>Sémaphore – transfert de fichier par QR codes</h1>
+<div class="tabs">
+  <button id="tabSend" class="on">Envoyer (écran)</button>
+  <button id="tabRecv">Recevoir (caméra)</button>
+</div>
+
+<!-- ENVOI -->
+<div id="panelSend" class="panel on">
+  <div class="row"><label for="file">Fichier</label><input type="file" id="file"></div>
+  <div class="row"><label for="chunk">Taille d'un morceau (caractères)</label><input type="number" id="chunk" value="800" min="100" max="2500" step="50"></div>
+  <div class="row"><label for="fps">Images par seconde</label><input type="number" id="fps" value="8" min="1" max="30"></div>
+  <button class="act" id="btnStart" disabled>Démarrer</button>
+  <button class="act sec" id="btnStop" disabled>Arrêter</button>
+  <div class="status" id="sendStatus"></div>
+  <div class="stage"><canvas id="qrCanvas" width="10" height="10"></canvas></div>
+  <p class="hint">Place le téléphone face à l'écran, QR bien visible et net. Si le téléphone rate beaucoup d'images : réduis la taille des morceaux ou les images par seconde.</p>
+</div>
+
+<!-- RÉCEPTION -->
+<div id="panelRecv" class="panel">
+  <button class="act" id="btnCam">Démarrer la caméra</button>
+  <button class="act sec" id="btnReset" disabled>Recommencer</button>
+  <video id="video" playsinline muted></video>
+  <div class="bar"><div id="barFill"></div></div>
+  <div class="status" id="recvStatus">Caméra éteinte.</div>
+  <div id="dlZone"></div>
+  <canvas id="scanCanvas" style="display:none"></canvas>
+  <p class="hint">La caméra n'est utilisable que si la page est servie en HTTPS (ou en localhost).</p>
+</div>
+
+<script>/*QRCODE*/</script>
+<script>/*JSQR*/</script>
+<script>/*CORE*/</script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ---------- Onglets ----------
+  function show(which) {
+    $("tabSend").classList.toggle("on", which === "send");
+    $("tabRecv").classList.toggle("on", which === "recv");
+    $("panelSend").classList.toggle("on", which === "send");
+    $("panelRecv").classList.toggle("on", which === "recv");
+    if (which !== "recv") stopCam();
+    if (which !== "send") stopSend();
+  }
+  $("tabSend").onclick = function () { show("send"); };
+  $("tabRecv").onclick = function () { show("recv"); };
+
+  // ---------- Envoi ----------
+  var fileBytes = null, fileName = "", frames = null, sendTimer = null, cur = 0;
+  var cache = {};
+
+  $("file").onchange = function () {
+    var f = this.files[0];
+    if (!f) return;
+    var rd = new FileReader();
+    rd.onload = function () {
+      fileBytes = new Uint8Array(rd.result);
+      fileName = f.name;
+      $("btnStart").disabled = false;
+      $("sendStatus").textContent = f.name + " – " + fileBytes.length + " octets";
+    };
+    rd.readAsArrayBuffer(f);
+  };
+
+  function drawFrame(text) {
+    var qr = cache[text];
+    if (!qr) {
+      qr = qrcode(0, "L");
+      qr.addData(text, "Byte");
+      qr.make();
+      cache = {}; cache[text] = qr; // on ne garde que la trame courante
+    }
+    var count = qr.getModuleCount(), quiet = 4;
+    var cell = Math.max(2, Math.floor(720 / (count + quiet * 2)));
+    var size = (count + quiet * 2) * cell;
+    var cv = $("qrCanvas");
+    cv.width = size; cv.height = size;
+    var ctx = cv.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = "#000";
+    for (var r = 0; r < count; r++)
+      for (var c = 0; c < count; c++)
+        if (qr.isDark(r, c)) ctx.fillRect((c + quiet) * cell, (r + quiet) * cell, cell, cell);
+  }
+
+  function stopSend() {
+    if (sendTimer) { clearInterval(sendTimer); sendTimer = null; }
+    $("btnStop").disabled = true;
+    $("btnStart").disabled = !fileBytes;
+  }
+
+  $("btnStart").onclick = async function () {
+    stopSend();
+    var chunk = Math.min(2500, Math.max(100, parseInt($("chunk").value, 10) || 800));
+    var fps = Math.min(30, Math.max(1, parseInt($("fps").value, 10) || 8));
+    $("sendStatus").textContent = "Préparation…";
+    var enc = await Semaphore.encodeFile(fileBytes, fileName, chunk);
+    frames = enc.frames; cur = 0;
+    $("btnStart").disabled = true; $("btnStop").disabled = false;
+    sendTimer = setInterval(function () {
+      drawFrame(frames[cur]);
+      $("sendStatus").textContent = fileName + " – image " + (cur + 1) + "/" + frames.length +
+        " (" + enc.rawSize + " o → " + enc.compSize + " o compressés)";
+      cur = (cur + 1) % frames.length;
+    }, 1000 / fps);
+  };
+  $("btnStop").onclick = stopSend;
+
+  // ---------- Réception ----------
+  var rx = new Semaphore.Receiver(), stream = null, scanning = false, detector = null, done = false;
+
+  function setRecv(msg, isErr) {
+    var el = $("recvStatus");
+    el.textContent = msg;
+    el.classList.toggle("err", !!isErr);
+  }
+  function updateProgress() {
+    var pct = rx.n ? Math.round(100 * rx.got / rx.n) : 0;
+    $("barFill").style.width = pct + "%";
+    if (rx.n) {
+      var label = rx.meta ? rx.meta.name + " – " : "";
+      setRecv(label + rx.got + "/" + rx.n + " images reçues (" + pct + " %)");
+    }
+  }
+
+  function stopCam() {
+    scanning = false;
+    if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+    $("video").srcObject = null;
+    $("btnCam").disabled = false;
+  }
+
+  function resetRecv() {
+    rx.reset(); done = false;
+    $("dlZone").innerHTML = "";
+    $("barFill").style.width = "0";
+    setRecv(stream ? "En attente d'un QR code…" : "Caméra éteinte.");
+  }
+  $("btnReset").onclick = resetRecv;
+
+  async function onFrameText(text) {
+    if (done) return;
+    var r = rx.addFrame(text);
+    if (r === true) {
+      updateProgress();
+      if (rx.isComplete()) {
+        done = true;
+        try {
+          var out = await rx.finish();
+          var url = URL.createObjectURL(new Blob([out.bytes]));
+          var a = document.createElement("a");
+          a.className = "dl"; a.href = url; a.download = out.name;
+          a.textContent = "Télécharger " + out.name + " (" + out.bytes.length + " octets)";
+          $("dlZone").innerHTML = ""; $("dlZone").appendChild(a);
+          setRecv("Fichier reçu et vérifié ✔");
+        } catch (e) {
+          setRecv(e.message, true);
+        }
+      }
+    }
+  }
+
+  var sc = $("scanCanvas"), sctx = sc.getContext("2d", { willReadFrequently: true });
+
+  async function scanLoop() {
+    if (!scanning) return;
+    var v = $("video");
+    if (v.readyState >= 2 && v.videoWidth) {
+      try {
+        if (detector) {
+          var codes = await detector.detect(v);
+          for (var i = 0; i < codes.length; i++) await onFrameText(codes[i].rawValue);
+        } else {
+          var scale = Math.min(1, 960 / v.videoWidth);
+          sc.width = Math.round(v.videoWidth * scale);
+          sc.height = Math.round(v.videoHeight * scale);
+          sctx.drawImage(v, 0, 0, sc.width, sc.height);
+          var img = sctx.getImageData(0, 0, sc.width, sc.height);
+          var res = jsQR(img.data, img.width, img.height, { inversionAttempts: "dontInvert" });
+          if (res) await onFrameText(res.data);
+        }
+      } catch (e) { /* image illisible, on continue */ }
+    }
+    requestAnimationFrame(scanLoop);
+  }
+
+  $("btnCam").onclick = async function () {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setRecv("Caméra indisponible : ouvre la page en HTTPS.", true);
+      return;
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } },
+        audio: false
+      });
+    } catch (e) {
+      setRecv("Accès caméra refusé ou impossible : " + e.message, true);
+      return;
+    }
+    var v = $("video");
+    v.srcObject = stream;
+    await v.play();
+    if ("BarcodeDetector" in window) {
+      try { detector = new BarcodeDetector({ formats: ["qr_code"] }); } catch (e) { detector = null; }
+    }
+    $("btnCam").disabled = true; $("btnReset").disabled = false;
+    resetRecv();
+    scanning = true;
+    scanLoop();
+  };
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "semaphore",
+  "version": "0.1.0",
+  "description": "Transfert de fichiers écran → téléphone par QR codes",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "test": "node test/roundtrip.test.js"
+  },
+  "dependencies": {
+    "jsqr": "^1.4.0",
+    "qrcode-generator": "^2.0.4"
+  },
+  "private": true
+}
