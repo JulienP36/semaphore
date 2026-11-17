@@ -14,13 +14,17 @@
   .tabs button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
   .panel { display: none; }
   .panel.on { display: block; }
-  .row { display: grid; grid-template-columns: 11rem 1fr; gap: 8px; align-items: center; margin: 8px 0; }
-  .row input[type=number], .row input[type=file] { width: 100%; }
+  .row { display: grid; grid-template-columns: 13rem 1fr; gap: 8px; align-items: center; margin: 8px 0; }
+  .row input[type=number], .row input[type=file], .row select { width: 100%; padding: 4px; }
   button.act { padding: 10px 16px; font-size: 1rem; border-radius: 8px; border: 0; background: var(--accent); color: #fff; cursor: pointer; margin: 6px 6px 6px 0; }
   button.act.sec { background: #8886; color: inherit; }
   button.act:disabled { opacity: .4; cursor: default; }
-  .stage { background: #fff; display: flex; justify-content: center; border-radius: 8px; padding: 6px; margin-top: 10px; }
-  #qrCanvas { width: min(100%, 70vh); height: auto; image-rendering: pixelated; }
+  fieldset { border: 1px solid #8884; border-radius: 8px; margin: 10px 0; padding: 4px 10px 8px; }
+  legend { font-size: .9rem; opacity: .8; padding: 0 6px; }
+  .stage { background: #fff; display: flex; justify-content: center; align-items: center; border-radius: 8px; padding: 6px; margin-top: 10px; }
+  #qrCanvas { width: min(100%, 75vh); height: auto; aspect-ratio: 1; image-rendering: pixelated; }
+  .stage:fullscreen { border-radius: 0; padding: 0; }
+  .stage:fullscreen #qrCanvas { width: min(100vw, 100vh); height: min(100vw, 100vh); }
   #video { width: 100%; border-radius: 8px; background: #000; max-height: 55vh; object-fit: contain; }
   .bar { height: 14px; background: #8883; border-radius: 7px; overflow: hidden; margin: 10px 0 4px; }
   .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .1s; }
@@ -39,14 +43,26 @@
 
 <!-- ENVOI -->
 <div id="panelSend" class="panel on">
-  <div class="row"><label for="file">Fichier</label><input type="file" id="file"></div>
-  <div class="row"><label for="chunk">Taille d'un morceau (caractères)</label><input type="number" id="chunk" value="800" min="100" max="2500" step="50"></div>
-  <div class="row"><label for="fps">Images par seconde</label><input type="number" id="fps" value="8" min="1" max="30"></div>
+  <fieldset>
+    <legend>Quoi envoyer</legend>
+    <div class="row"><label for="file">Fichier</label><input type="file" id="file"></div>
+    <div class="row"><label for="testKb">Fichier de test (Ko)</label><input type="number" id="testKb" value="300" min="10" max="5000" step="10"></div>
+    <button class="act sec" id="btnTest">Utiliser un fichier de test</button>
+  </fieldset>
+  <fieldset>
+    <legend>Réglages</legend>
+    <div class="row"><label for="block">Taille d'un paquet (octets)</label><input type="number" id="block" value="1000" min="100" max="2400" step="100"></div>
+    <div class="row"><label for="grid">Grille de QR</label>
+      <select id="grid"><option value="1">1 × 1</option><option value="2">2 × 2</option><option value="3">3 × 3</option></select></div>
+    <div class="row"><label for="fps">Écrans par seconde</label><input type="number" id="fps" value="10" min="1" max="30"></div>
+  </fieldset>
   <button class="act" id="btnStart" disabled>Démarrer</button>
   <button class="act sec" id="btnStop" disabled>Arrêter</button>
+  <button class="act sec" id="btnFull" disabled>Plein écran</button>
+  <div class="status" id="sendInfo"></div>
   <div class="status" id="sendStatus"></div>
-  <div class="stage"><canvas id="qrCanvas" width="10" height="10"></canvas></div>
-  <p class="hint">Place le téléphone face à l'écran, QR bien visible et net. Si le téléphone rate beaucoup d'images : réduis la taille des morceaux ou les images par seconde.</p>
+  <div class="stage" id="stage"><canvas id="qrCanvas" width="10" height="10"></canvas></div>
+  <p class="hint">Place le téléphone face à l'écran, QR bien net. Pour aller plus vite : plus de QR (grille), plus de paquets par seconde, ou des paquets plus gros. Mets le plein écran dès que tu utilises une grille. Garde un module d'au moins 4 px.</p>
 </div>
 
 <!-- RÉCEPTION -->
@@ -56,9 +72,10 @@
   <video id="video" playsinline muted></video>
   <div class="bar"><div id="barFill"></div></div>
   <div class="status" id="recvStatus">Caméra éteinte.</div>
+  <div class="status" id="recvStats"></div>
   <div id="dlZone"></div>
   <canvas id="scanCanvas" style="display:none"></canvas>
-  <p class="hint">La caméra n'est utilisable que si la page est servie en HTTPS (ou en localhost).</p>
+  <p class="hint">La caméra n'est utilisable que si la page est servie en HTTPS (ou en localhost). Tu peux démarrer la réception à n'importe quel moment : des paquets de rattrapage sont envoyés en continu.</p>
 </div>
 
 <script>/*QRCODE*/</script>
@@ -67,6 +84,13 @@
 <script>
 (function () {
   var $ = function (id) { return document.getElementById(id); };
+  var SIZE = 1440; // taille interne du canvas d'envoi (en pixels)
+
+  function fmtKo(bytesPerSec) {
+    var k = bytesPerSec / 1024;
+    return (k >= 10 ? Math.round(k) : k.toFixed(1)).toString().replace(".", ",") + " Ko/s";
+  }
+  function fmtSize(n) { return n >= 1048576 ? (n / 1048576).toFixed(1).replace(".", ",") + " Mo" : n >= 1024 ? Math.round(n / 1024) + " Ko" : n + " o"; }
 
   // ---------- Onglets ----------
   function show(which) {
@@ -81,65 +105,94 @@
   $("tabRecv").onclick = function () { show("recv"); };
 
   // ---------- Envoi ----------
-  var fileBytes = null, fileName = "", frames = null, sendTimer = null, cur = 0;
-  var cache = {};
+  var fileBytes = null, fileName = "", session = null, running = false, raf = 0;
+  var slot = 0, nextN = 0, lastT = 0, version = 1, grid = 1, interval = 100, screens = 0;
 
+  function setFile(bytes, name, label) {
+    fileBytes = bytes; fileName = name;
+    $("btnStart").disabled = false;
+    $("sendInfo").textContent = label;
+    $("sendStatus").textContent = "";
+  }
   $("file").onchange = function () {
     var f = this.files[0];
     if (!f) return;
     var rd = new FileReader();
     rd.onload = function () {
-      fileBytes = new Uint8Array(rd.result);
-      fileName = f.name;
-      $("btnStart").disabled = false;
-      $("sendStatus").textContent = f.name + " – " + fileBytes.length + " octets";
+      setFile(new Uint8Array(rd.result), f.name, f.name + " – " + fmtSize(rd.result.byteLength));
     };
     rd.readAsArrayBuffer(f);
   };
-
-  function drawFrame(text) {
-    var qr = cache[text];
-    if (!qr) {
-      qr = qrcode(0, "L");
-      qr.addData(text, "Byte");
-      qr.make();
-      cache = {}; cache[text] = qr; // on ne garde que la trame courante
-    }
-    var count = qr.getModuleCount(), quiet = 4;
-    var cell = Math.max(2, Math.floor(720 / (count + quiet * 2)));
-    var size = (count + quiet * 2) * cell;
-    var cv = $("qrCanvas");
-    cv.width = size; cv.height = size;
-    var ctx = cv.getContext("2d");
-    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, size, size);
-    ctx.fillStyle = "#000";
-    for (var r = 0; r < count; r++)
-      for (var c = 0; c < count; c++)
-        if (qr.isDark(r, c)) ctx.fillRect((c + quiet) * cell, (r + quiet) * cell, cell, cell);
-  }
+  $("btnTest").onclick = function () {
+    var kb = Math.min(5000, Math.max(10, parseInt($("testKb").value, 10) || 300));
+    var bytes = new Uint8Array(kb * 1024);
+    for (var i = 0; i < bytes.length; i += 65536) crypto.getRandomValues(bytes.subarray(i, Math.min(i + 65536, bytes.length)));
+    setFile(bytes, "test-" + kb + "Ko.bin", "Fichier de test aléatoire – " + fmtSize(bytes.length));
+  };
 
   function stopSend() {
-    if (sendTimer) { clearInterval(sendTimer); sendTimer = null; }
+    running = false;
+    if (raf) { cancelAnimationFrame(raf); raf = 0; }
     $("btnStop").disabled = true;
     $("btnStart").disabled = !fileBytes;
   }
 
+  function nextText() {
+    var t;
+    if (slot % session.metaEvery === 0) t = session.metaText;
+    else { t = session.dataText(nextN); nextN++; }
+    slot++;
+    return t;
+  }
+
+  function drawScreen() {
+    var texts = [];
+    for (var i = 0; i < grid * grid; i++) texts.push(nextText());
+    var scr = Semaphore.renderScreen(texts, grid, SIZE, version);
+    var cv = $("qrCanvas");
+    cv.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(scr.pixels.buffer), SIZE, SIZE), 0, 0);
+    screens++;
+    $("sendStatus").textContent = "Écran " + screens + " – " +
+      (nextN <= session.k ? "paquets " + nextN + " / " + session.k : "paquets de rattrapage (" + (nextN - session.k) + ")") +
+      " – module " + scr.cell + " px";
+  }
+
+  function tick(now) {
+    if (!running) return;
+    if (now - lastT >= interval) {
+      lastT = now; // pas de rattrapage du retard : on affiche simplement l'écran suivant
+      drawScreen();
+    }
+    raf = requestAnimationFrame(tick);
+  }
+
   $("btnStart").onclick = async function () {
     stopSend();
-    var chunk = Math.min(2500, Math.max(100, parseInt($("chunk").value, 10) || 800));
-    var fps = Math.min(30, Math.max(1, parseInt($("fps").value, 10) || 8));
+    var B = Math.min(2400, Math.max(100, parseInt($("block").value, 10) || 1000));
+    grid = parseInt($("grid").value, 10) || 1;
+    var fps = Math.min(30, Math.max(1, parseInt($("fps").value, 10) || 10));
+    interval = 1000 / fps;
     $("sendStatus").textContent = "Préparation…";
-    var enc = await Semaphore.encodeFile(fileBytes, fileName, chunk);
-    frames = enc.frames; cur = 0;
-    $("btnStart").disabled = true; $("btnStop").disabled = false;
-    sendTimer = setInterval(function () {
-      drawFrame(frames[cur]);
-      $("sendStatus").textContent = fileName + " – image " + (cur + 1) + "/" + frames.length +
-        " (" + enc.rawSize + " o → " + enc.compSize + " o compressés)";
-      cur = (cur + 1) % frames.length;
-    }, 1000 / fps);
+    $("btnStart").disabled = true;
+    session = await Semaphore.makeSession(fileBytes, fileName, B);
+    version = Semaphore.chooseVersion([session.metaText, session.dataText(0), session.dataText(session.k + 1)]);
+    var cv = $("qrCanvas");
+    cv.width = SIZE; cv.height = SIZE;
+    slot = 0; nextN = 0; screens = 0; lastT = 0;
+    var useful = session.B * grid * grid * fps * (1 - 1 / session.metaEvery);
+    $("sendInfo").textContent = fileName + " – " + fmtSize(session.rawSize) +
+      (session.compressed ? " (compressé en " + fmtSize(session.payloadSize) + ")" : "") +
+      " – " + session.k + " paquets de " + session.B + " o – débit théorique max ≈ " + fmtKo(useful);
+    running = true;
+    $("btnStop").disabled = false; $("btnFull").disabled = false;
+    raf = requestAnimationFrame(tick);
   };
   $("btnStop").onclick = stopSend;
+  $("btnFull").onclick = function () {
+    var st = $("stage");
+    if (st.requestFullscreen) st.requestFullscreen();
+    else if (st.webkitRequestFullscreen) st.webkitRequestFullscreen();
+  };
 
   // ---------- Réception ----------
   var rx = new Semaphore.Receiver(), stream = null, scanning = false, detector = null, done = false;
@@ -150,12 +203,15 @@
     el.classList.toggle("err", !!isErr);
   }
   function updateProgress() {
-    var pct = rx.n ? Math.round(100 * rx.got / rx.n) : 0;
-    $("barFill").style.width = pct + "%";
-    if (rx.n) {
-      var label = rx.meta ? rx.meta.name + " – " : "";
-      setRecv(label + rx.got + "/" + rx.n + " images reçues (" + pct + " %)");
-    }
+    if (!rx.k) return;
+    var frac = Math.min(1, Math.max(rx.unique / rx.k, rx.solved / rx.k));
+    $("barFill").style.width = Math.round(frac * 100) + "%";
+    var label = rx.meta ? rx.meta.n + " – " : "";
+    setRecv(label + "paquets reçus " + rx.unique + " / " + rx.k + " – blocs décodés " + rx.solved + " / " + rx.k +
+      (rx.solved === rx.k && !rx.meta ? " – en attente des métadonnées…" : ""));
+    var sec = rx.elapsedMs() / 1000;
+    $("recvStats").textContent = "Débit reçu ≈ " + fmtKo(rx.unique * rx.B / sec) + " – doublons ignorés : " + rx.dups +
+      " – lecteur : " + (detector ? "natif" : "de secours");
   }
 
   function stopCam() {
@@ -169,14 +225,15 @@
     rx.reset(); done = false;
     $("dlZone").innerHTML = "";
     $("barFill").style.width = "0";
+    $("recvStats").textContent = "";
     setRecv(stream ? "En attente d'un QR code…" : "Caméra éteinte.");
   }
   $("btnReset").onclick = resetRecv;
 
   async function onFrameText(text) {
     if (done) return;
-    var r = rx.addFrame(text);
-    if (r === true) {
+    var r = rx.addText(text);
+    if (r === "new" || r === "meta") {
       updateProgress();
       if (rx.isComplete()) {
         done = true;
@@ -185,9 +242,13 @@
           var url = URL.createObjectURL(new Blob([out.bytes]));
           var a = document.createElement("a");
           a.className = "dl"; a.href = url; a.download = out.name;
-          a.textContent = "Télécharger " + out.name + " (" + out.bytes.length + " octets)";
+          a.textContent = "Télécharger " + out.name + " (" + fmtSize(out.bytes.length) + ")";
           $("dlZone").innerHTML = ""; $("dlZone").appendChild(a);
+          $("barFill").style.width = "100%";
+          var sec = rx.elapsedMs() / 1000;
           setRecv("Fichier reçu et vérifié ✔");
+          $("recvStats").textContent = "Terminé en " + sec.toFixed(1).replace(".", ",") + " s – débit moyen " +
+            fmtKo(out.bytes.length / sec) + " (" + rx.unique + " paquets utiles, " + rx.dups + " doublons)";
         } catch (e) {
           setRecv(e.message, true);
         }
@@ -202,18 +263,19 @@
     var v = $("video");
     if (v.readyState >= 2 && v.videoWidth) {
       try {
+        var texts = [];
         if (detector) {
           var codes = await detector.detect(v);
-          for (var i = 0; i < codes.length; i++) await onFrameText(codes[i].rawValue);
+          for (var i = 0; i < codes.length; i++) texts.push(codes[i].rawValue);
         } else {
-          var scale = Math.min(1, 960 / v.videoWidth);
+          var scale = Math.min(1, 1920 / v.videoWidth);
           sc.width = Math.round(v.videoWidth * scale);
           sc.height = Math.round(v.videoHeight * scale);
           sctx.drawImage(v, 0, 0, sc.width, sc.height);
           var img = sctx.getImageData(0, 0, sc.width, sc.height);
-          var res = jsQR(img.data, img.width, img.height, { inversionAttempts: "dontInvert" });
-          if (res) await onFrameText(res.data);
+          texts = Semaphore.scanImage(img.data, img.width, img.height, jsQR);
         }
+        for (var j = 0; j < texts.length; j++) await onFrameText(texts[j]);
       } catch (e) { /* image illisible, on continue */ }
     }
     requestAnimationFrame(scanLoop);
@@ -236,6 +298,7 @@
     var v = $("video");
     v.srcObject = stream;
     await v.play();
+    detector = null;
     if ("BarcodeDetector" in window) {
       try { detector = new BarcodeDetector({ formats: ["qr_code"] }); } catch (e) { detector = null; }
     }
