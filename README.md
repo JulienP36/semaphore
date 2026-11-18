@@ -10,6 +10,10 @@ Transférer un fichier d'un écran (PC, LCD…) vers un téléphone, **sans câb
 2. Sur le téléphone, ouvre la même page, onglet **Recevoir (caméra)**, clique sur **Démarrer la caméra** et vise l'écran. Tu peux le faire à n'importe quel moment : pas besoin de commencer au début.
 3. Quand la barre est pleine, le fichier est vérifié (SHA-256) et un bouton de téléchargement apparaît. Les statistiques de débit s'affichent sous la barre.
 
+## Filmer d'abord, extraire ensuite
+
+Si la lecture en direct est trop lente pour ton téléphone, filme simplement l'écran avec l'appli Appareil photo (le ralenti 60 ou 120 images/s aide), puis, dans l'onglet **Recevoir**, choisis la vidéo dans « Ou depuis une vidéo enregistrée » et clique sur **Analyser la vidéo**. Ça marche aussi sur un PC : filme avec le téléphone, ouvre la page sur le PC et donne-lui la vidéo. Le décodage n'a pas à suivre l'écran en temps réel. Pour des vidéos longues, 15 images analysées par seconde suffisent souvent.
+
 ## Régler la vitesse
 
 Le débit dépend de ce que ta caméra arrive à lire. Utilise le **fichier de test** et regarde le débit affiché sur le téléphone pendant que tu changes les réglages :
@@ -18,7 +22,7 @@ Le débit dépend de ce que ta caméra arrive à lire. Utilise le **fichier de t
 - **Taille d'un paquet** : des paquets plus gros transportent plus par QR, mais le QR devient plus dense.
 - **Écrans par seconde** : limité par la caméra (souvent 30 images/s) et par l'écran.
 
-Le débit théorique maximal est affiché côté PC. En pratique, fie-toi au « débit reçu » mesuré par le téléphone.
+Le débit théorique maximal est affiché côté PC. En pratique, fie-toi au « débit reçu » mesuré par le téléphone. La ligne de diagnostic sous la barre de progression indique quel lecteur de QR est utilisé et combien d'images il analyse par seconde : si ce nombre est bien plus bas que le nombre d'écrans par seconde de l'émetteur, c'est le téléphone qui limite, pas l'émetteur.
 
 ## Fonctionnement
 

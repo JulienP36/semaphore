@@ -94,6 +94,24 @@ async function testScreens(g, B, size, label) {
   console.log(`OK  écrans ${label} : k=${s.k}, version QR ${version}, module ${lastCell}px, ${screens} écrans (${lost} ratés), ${Date.now() - t0} ms`);
 }
 
+
+// Régression : jsQR ne lit pas un QR dense dont les modules font 9 px ; le lecteur de secours doit s'en sortir.
+async function testScaledDense() {
+  const data = randomBytes(100 * 1024);
+  const s = await S.makeSession(data, "d.bin", 1000);
+  const version = S.chooseVersion([s.metaText, s.dataText(0), s.dataText(s.k + 1)]);
+  let ok = 0; const trials = 8;
+  for (let i = 0; i < trials; i++) {
+    const t = s.dataText(i * 5 + 1);
+    const scr = S.renderScreen([t], 1, 1440, version);
+    const small = S.resample(new Uint8ClampedArray(scr.pixels.buffer.slice(0)), 1440, 1440, 1080, 1080);
+    const found = S.scanImage(small, 1080, 1080, jsQR);
+    if (found.length === 1 && found[0] === t) ok++;
+  }
+  assert(ok >= trials - 1, `QR dense réduit à 75 % : ${ok}/${trials} lus`);
+  console.log(`OK  QR dense réduit à 75 % (modules de 9 px) : ${ok}/${trials} lus`);
+}
+
 (async () => {
   await testBase45();
   for (const [k, loss, start] of [[1, 0, 0], [2, 0.3, 0], [3, 0.3, 7], [10, 0.3, 0], [50, 0.3, 50], [300, 0.3, 0], [1000, 0.2, 1000]]) {
@@ -102,6 +120,7 @@ async function testScreens(g, B, size, label) {
   }
   await testCompression();
   await testCorruption();
+  await testScaledDense();
   await testScreens(1, 1000, 1440, "1×1 (1000 o/paquet)");
   await testScreens(2, 600, 1440, "2×2 (600 o/paquet)");
   console.log("Tous les tests passent.");

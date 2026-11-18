@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.1 – 18/11/2026
+
+Version de diagnostic et d'enregistrement : mieux comprendre ce que lit le téléphone, et pouvoir filmer d'abord pour extraire ensuite.
+
+**Nouveautés**
+- **Import d'une vidéo.** Dans l'onglet Recevoir, on peut choisir une vidéo (filmée avec n'importe quelle appli, y compris au ralenti) et la page en extrait le fichier, sur téléphone comme sur PC. Le décodage n'a plus besoin de suivre l'écran en temps réel : seule compte la qualité de la vidéo. Un réglage permet de choisir combien d'images de la vidéo sont analysées par seconde (30 par défaut ; 15 suffit souvent et va deux fois plus vite).
+- **Ligne de diagnostic en direct** sous la barre de progression : lecteur de QR utilisé (celui du navigateur ou le lecteur de secours), nombre d'images analysées par seconde, durée d'une analyse, nombre de QR lus par image. Elle reste affichée une fois le transfert terminé.
+- À la fin d'une analyse de vidéo, la page indique la durée pendant laquelle le fichier était affiché, le débit correspondant et le temps d'analyse. Si la vidéo est trop courte ou trop floue, elle dit combien de paquets il manque.
+
+**Corrections**
+- Le lecteur de secours (utilisé quand le navigateur n'a pas de lecteur de QR intégré, par exemple sur iPhone ou Firefox) échouait systématiquement sur certains QR denses dont les modules font 9 pixels à l'image. Il retente maintenant à une autre échelle quand une première lecture échoue.
+- La lecture en direct s'arrête d'elle-même quand le fichier est complet (moins de batterie utilisée) et repart avec « Recommencer ».
+- Le démarrage de la caméra ne lance plus deux boucles de lecture à la fois.
+
 ## 0.2.0 – 17/11/2026
 
 Version centrée sur la vitesse et la fiabilité du transfert.

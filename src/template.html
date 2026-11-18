@@ -70,12 +70,20 @@
   <button class="act" id="btnCam">Démarrer la caméra</button>
   <button class="act sec" id="btnReset" disabled>Recommencer</button>
   <video id="video" playsinline muted></video>
+  <fieldset>
+    <legend>Ou depuis une vidéo enregistrée</legend>
+    <div class="row"><label for="videoFile">Vidéo</label><input type="file" id="videoFile" accept="video/*"></div>
+    <div class="row"><label for="vfps">Images analysées par seconde de vidéo</label><input type="number" id="vfps" value="30" min="1" max="120"></div>
+    <button class="act" id="btnVideo" disabled>Analyser la vidéo</button>
+    <button class="act sec" id="btnVideoStop" disabled>Arrêter l'analyse</button>
+  </fieldset>
   <div class="bar"><div id="barFill"></div></div>
   <div class="status" id="recvStatus">Caméra éteinte.</div>
   <div class="status" id="recvStats"></div>
+  <div class="status hint" id="recvDiag"></div>
   <div id="dlZone"></div>
   <canvas id="scanCanvas" style="display:none"></canvas>
-  <p class="hint">La caméra n'est utilisable que si la page est servie en HTTPS (ou en localhost). Tu peux démarrer la réception à n'importe quel moment : des paquets de rattrapage sont envoyés en continu.</p>
+  <p class="hint">La caméra n'est utilisable que si la page est servie en HTTPS (ou en localhost). Tu peux démarrer la réception à n'importe quel moment : des paquets de rattrapage sont envoyés en continu. Tu peux aussi filmer l'écran avec n'importe quelle appli (le ralenti 60 ou 120 images/s aide) puis donner la vidéo à la page : elle n'a pas besoin de la lire en direct.</p>
 </div>
 
 <script>/*QRCODE*/</script>
@@ -98,7 +106,7 @@
     $("tabRecv").classList.toggle("on", which === "recv");
     $("panelSend").classList.toggle("on", which === "send");
     $("panelRecv").classList.toggle("on", which === "recv");
-    if (which !== "recv") stopCam();
+    if (which !== "recv") { stopCam(); cancelVideo(); }
     if (which !== "send") stopSend();
   }
   $("tabSend").onclick = function () { show("send"); };
@@ -195,23 +203,74 @@
   };
 
   // ---------- Réception ----------
-  var rx = new Semaphore.Receiver(), stream = null, scanning = false, detector = null, done = false;
+  var rx = new Semaphore.Receiver(), stream = null, scanning = false, done = false;
+  var detector = null, readerChecked = false;
+  var videoJob = null, videoInfo = null;
 
   function setRecv(msg, isErr) {
     var el = $("recvStatus");
     el.textContent = msg;
     el.classList.toggle("err", !!isErr);
   }
+
+  // Lecteur de QR : celui du navigateur (rapide) s'il existe, sinon le lecteur de secours en JavaScript.
+  function checkReader() {
+    if (readerChecked) return;
+    readerChecked = true;
+    detector = null;
+    if ("BarcodeDetector" in window) {
+      try { detector = new BarcodeDetector({ formats: ["qr_code"] }); } catch (e) { detector = null; }
+    }
+  }
+  var sc = $("scanCanvas"), sctx = sc.getContext("2d", { willReadFrequently: true });
+  async function readCodes(v) {
+    if (detector) {
+      var codes = await detector.detect(v), out = [];
+      for (var i = 0; i < codes.length; i++) out.push(codes[i].rawValue);
+      return out;
+    }
+    var scale = Math.min(1, 1920 / v.videoWidth);
+    sc.width = Math.round(v.videoWidth * scale);
+    sc.height = Math.round(v.videoHeight * scale);
+    sctx.drawImage(v, 0, 0, sc.width, sc.height);
+    var img = sctx.getImageData(0, 0, sc.width, sc.height);
+    return Semaphore.scanImage(img.data, img.width, img.height, jsQR);
+  }
+
+  // Diagnostic : mesures sur les 3 dernières secondes d'analyse, affichées dans une ligne à part
+  // (elle reste visible quand le transfert est terminé).
+  var diag = { t: [], ms: [], n: [] }, lastDiagShow = 0;
+  function diagReset() { diag = { t: [], ms: [], n: [] }; lastDiagShow = 0; $("recvDiag").textContent = ""; }
+  function diagPush(ms, n) {
+    var now = performance.now();
+    diag.t.push(now); diag.ms.push(ms); diag.n.push(n);
+    while (diag.t.length > 1 && now - diag.t[0] > 3000) { diag.t.shift(); diag.ms.shift(); diag.n.shift(); }
+  }
+  function diagShow(force) {
+    var now = performance.now();
+    if (!force && now - lastDiagShow < 400) return;
+    lastDiagShow = now;
+    var len = diag.t.length;
+    if (!len) return;
+    var sum = function (a) { return a.reduce(function (x, y) { return x + y; }, 0); };
+    var span = (diag.t[len - 1] - diag.t[0]) / 1000;
+    var perSec = len > 1 && span > 0 ? (len - 1) / span : 0;
+    var f1 = function (x) { return x.toFixed(1).replace(".", ","); };
+    $("recvDiag").textContent = "Diagnostic – lecteur : " + (detector ? "natif du navigateur" : "de secours (JavaScript)") +
+      " – images analysées : " + f1(perSec) + "/s – durée d'une analyse : " + Math.round(sum(diag.ms) / len) +
+      " ms – QR lus par image : " + f1(sum(diag.n) / len);
+  }
+
   function updateProgress() {
     if (!rx.k) return;
     var frac = Math.min(1, Math.max(rx.unique / rx.k, rx.solved / rx.k));
     $("barFill").style.width = Math.round(frac * 100) + "%";
     var label = rx.meta ? rx.meta.n + " – " : "";
     setRecv(label + "paquets reçus " + rx.unique + " / " + rx.k + " – blocs décodés " + rx.solved + " / " + rx.k +
-      (rx.solved === rx.k && !rx.meta ? " – en attente des métadonnées…" : ""));
+      (rx.solved === rx.k && !rx.meta ? " – en attente des métadonnées…" : "") +
+      (videoInfo ? " – vidéo : " + videoInfo.t.toFixed(1).replace(".", ",") + " / " + videoInfo.dur.toFixed(1).replace(".", ",") + " s" : ""));
     var sec = rx.elapsedMs() / 1000;
-    $("recvStats").textContent = "Débit reçu ≈ " + fmtKo(rx.unique * rx.B / sec) + " – doublons ignorés : " + rx.dups +
-      " – lecteur : " + (detector ? "natif" : "de secours");
+    $("recvStats").textContent = "Débit reçu ≈ " + fmtKo(rx.unique * rx.B / sec) + " – doublons ignorés : " + rx.dups;
   }
 
   function stopCam() {
@@ -222,63 +281,64 @@
   }
 
   function resetRecv() {
-    rx.reset(); done = false;
+    cancelVideo();
+    rx.reset(); done = false; videoInfo = null;
     $("dlZone").innerHTML = "";
     $("barFill").style.width = "0";
     $("recvStats").textContent = "";
+    diagReset();
     setRecv(stream ? "En attente d'un QR code…" : "Caméra éteinte.");
+    if (stream && !scanning) { scanning = true; scanLoop(); }
   }
   $("btnReset").onclick = resetRecv;
 
-  async function onFrameText(text) {
-    if (done) return;
-    var r = rx.addText(text);
-    if (r === "new" || r === "meta") {
-      updateProgress();
-      if (rx.isComplete()) {
-        done = true;
-        try {
-          var out = await rx.finish();
-          var url = URL.createObjectURL(new Blob([out.bytes]));
-          var a = document.createElement("a");
-          a.className = "dl"; a.href = url; a.download = out.name;
-          a.textContent = "Télécharger " + out.name + " (" + fmtSize(out.bytes.length) + ")";
-          $("dlZone").innerHTML = ""; $("dlZone").appendChild(a);
-          $("barFill").style.width = "100%";
-          var sec = rx.elapsedMs() / 1000;
-          setRecv("Fichier reçu et vérifié ✔");
-          $("recvStats").textContent = "Terminé en " + sec.toFixed(1).replace(".", ",") + " s – débit moyen " +
-            fmtKo(out.bytes.length / sec) + " (" + rx.unique + " paquets utiles, " + rx.dups + " doublons)";
-        } catch (e) {
-          setRecv(e.message, true);
-        }
+  // Le fichier est complet : on le reconstruit, on le vérifie, on propose le téléchargement.
+  async function complete() {
+    done = true;
+    scanning = false;
+    try {
+      var out = await rx.finish();
+      var url = URL.createObjectURL(new Blob([out.bytes]));
+      var a = document.createElement("a");
+      a.className = "dl"; a.href = url; a.download = out.name;
+      a.textContent = "Télécharger " + out.name + " (" + fmtSize(out.bytes.length) + ")";
+      $("dlZone").innerHTML = ""; $("dlZone").appendChild(a);
+      $("barFill").style.width = "100%";
+      var sec = rx.elapsedMs() / 1000, f1 = function (x) { return x.toFixed(1).replace(".", ","); };
+      setRecv("Fichier reçu et vérifié ✔");
+      $("recvStats").textContent = (videoInfo ? "Durée d'affichage dans la vidéo : " : "Terminé en ") + f1(sec) +
+        " s – débit moyen " + fmtKo(out.bytes.length / sec) + " (" + rx.unique + " paquets utiles, " + rx.dups + " doublons)" +
+        (videoInfo ? " – analysé en " + f1((performance.now() - videoInfo.wall0) / 1000) + " s (" + videoInfo.frames + " images)" : "");
+    } catch (e) {
+      setRecv(e.message, true);
+    }
+  }
+
+  async function handleTexts(texts, timeMs) {
+    for (var i = 0; i < texts.length && !done; i++) {
+      var r = rx.addText(texts[i], timeMs);
+      if (r === "new" || r === "meta") {
+        updateProgress();
+        if (rx.isComplete()) await complete();
       }
     }
   }
 
-  var sc = $("scanCanvas"), sctx = sc.getContext("2d", { willReadFrequently: true });
-
+  // ----- caméra en direct -----
   async function scanLoop() {
     if (!scanning) return;
     var v = $("video");
     if (v.readyState >= 2 && v.videoWidth) {
       try {
-        var texts = [];
-        if (detector) {
-          var codes = await detector.detect(v);
-          for (var i = 0; i < codes.length; i++) texts.push(codes[i].rawValue);
-        } else {
-          var scale = Math.min(1, 1920 / v.videoWidth);
-          sc.width = Math.round(v.videoWidth * scale);
-          sc.height = Math.round(v.videoHeight * scale);
-          sctx.drawImage(v, 0, 0, sc.width, sc.height);
-          var img = sctx.getImageData(0, 0, sc.width, sc.height);
-          texts = Semaphore.scanImage(img.data, img.width, img.height, jsQR);
-        }
-        for (var j = 0; j < texts.length; j++) await onFrameText(texts[j]);
+        var t0 = performance.now();
+        var texts = await readCodes(v);
+        diagPush(performance.now() - t0, texts.length);
+        diagShow(false);
+        await handleTexts(texts, Date.now());
       } catch (e) { /* image illisible, on continue */ }
     }
-    requestAnimationFrame(scanLoop);
+    if (scanning) requestAnimationFrame(scanLoop);
+    else diagShow(true);
   }
 
   $("btnCam").onclick = async function () {
@@ -286,6 +346,7 @@
       setRecv("Caméra indisponible : ouvre la page en HTTPS.", true);
       return;
     }
+    cancelVideo();
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } },
@@ -298,14 +359,87 @@
     var v = $("video");
     v.srcObject = stream;
     await v.play();
-    detector = null;
-    if ("BarcodeDetector" in window) {
-      try { detector = new BarcodeDetector({ formats: ["qr_code"] }); } catch (e) { detector = null; }
-    }
+    readerChecked = false; checkReader();
     $("btnCam").disabled = true; $("btnReset").disabled = false;
-    resetRecv();
-    scanning = true;
-    scanLoop();
+    resetRecv(); // lance aussi la boucle de lecture
+  };
+
+  // ----- vidéo enregistrée -----
+  var videoSource = null;
+  $("videoFile").onchange = function () {
+    videoSource = this.files[0] || null;
+    $("btnVideo").disabled = !videoSource;
+  };
+
+  function waitEvent(el, ok, ms) {
+    return new Promise(function (resolve, reject) {
+      var timer = setTimeout(function () { cleanup(); reject(new Error("délai dépassé")); }, ms || 20000);
+      function good() { cleanup(); resolve(); }
+      function bad() { cleanup(); reject(new Error("vidéo illisible par ce navigateur")); }
+      function cleanup() { clearTimeout(timer); el.removeEventListener(ok, good); el.removeEventListener("error", bad); }
+      el.addEventListener(ok, good); el.addEventListener("error", bad);
+    });
+  }
+  function seekTo(v, t) {
+    if (Math.abs(v.currentTime - t) < 1e-6) return Promise.resolve();
+    var p = waitEvent(v, "seeked", 10000);
+    v.currentTime = t;
+    return p;
+  }
+  function cancelVideo() {
+    if (videoJob) videoJob.cancel = true;
+  }
+  $("btnVideoStop").onclick = cancelVideo;
+
+  $("btnVideo").onclick = async function () {
+    if (!videoSource) return;
+    stopCam();
+    rx.reset(); done = false; diagReset();
+    $("dlZone").innerHTML = ""; $("barFill").style.width = "0"; $("recvStats").textContent = "";
+    readerChecked = false; checkReader();
+    var job = videoJob = { cancel: false };
+    var fps = Math.min(120, Math.max(1, parseInt($("vfps").value, 10) || 30));
+    var v = document.createElement("video"), url = URL.createObjectURL(videoSource);
+    v.muted = true; v.playsInline = true; v.preload = "auto"; v.src = url;
+    $("btnVideo").disabled = true; $("btnVideoStop").disabled = false; $("btnReset").disabled = false;
+    setRecv("Ouverture de la vidéo…");
+    try {
+      await waitEvent(v, "loadeddata", 30000);
+      var dur = v.duration;
+      if (!isFinite(dur)) { // vidéos sans durée (certains enregistrements) : on force le calcul
+        v.currentTime = 1e9;
+        await waitEvent(v, "durationchange", 10000).catch(function () {});
+        dur = v.duration;
+        await seekTo(v, 0);
+      }
+      if (!isFinite(dur) || dur <= 0) throw new Error("durée de la vidéo inconnue");
+      videoInfo = { t: 0, dur: dur, frames: 0, wall0: performance.now() };
+      var step = 1 / fps, t = 0.001;
+      while (!job.cancel && !done && t <= dur) {
+        await seekTo(v, t);
+        var a0 = performance.now();
+        var texts = await readCodes(v);
+        diagPush(performance.now() - a0, texts.length);
+        videoInfo.t = t; videoInfo.frames++;
+        diagShow(false);
+        await handleTexts(texts, Math.round(t * 1000));
+        if (!done && videoInfo.frames % 5 === 0) updateProgress();
+        t += step;
+      }
+      diagShow(true);
+      if (!done) {
+        updateProgress();
+        setRecv(job.cancel ? "Analyse arrêtée." :
+          "Vidéo analysée, mais le fichier est incomplet (" + rx.unique + " paquets reçus" + (rx.k ? " sur " + rx.k + " nécessaires" : "") +
+          "). Filme plus longtemps ou plus net, ou analyse plus d'images par seconde.", !job.cancel);
+      }
+    } catch (e) {
+      setRecv("Analyse impossible : " + e.message, true);
+    } finally {
+      URL.revokeObjectURL(url);
+      if (videoJob === job) videoJob = null;
+      $("btnVideo").disabled = !videoSource; $("btnVideoStop").disabled = true;
+    }
   };
 })();
 </script>

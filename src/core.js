@@ -371,27 +371,58 @@ var Semaphore = (function () {
                y0: Math.max(0, b.y0 * f - f), y1: Math.min(h, (b.y1 + 1) * f + f) };
     });
   }
+  // Redimensionnement bilinéaire d'une image RGBA.
+  function resample(src, w, h, nw, nh) {
+    var dst = new Uint8ClampedArray(nw * nh * 4), xr = w / nw, yr = h / nh;
+    for (var y = 0; y < nh; y++) {
+      var sy = (y + 0.5) * yr - 0.5, y0 = Math.max(0, Math.floor(sy)), y1 = Math.min(h - 1, y0 + 1);
+      var fy = Math.min(1, Math.max(0, sy - y0));
+      for (var x = 0; x < nw; x++) {
+        var sx = (x + 0.5) * xr - 0.5, x0 = Math.max(0, Math.floor(sx)), x1 = Math.min(w - 1, x0 + 1);
+        var fx = Math.min(1, Math.max(0, sx - x0)), o = (y * nw + x) * 4;
+        var a = (y0 * w + x0) * 4, b = (y0 * w + x1) * 4, c = (y1 * w + x0) * 4, d = (y1 * w + x1) * 4;
+        for (var k = 0; k < 3; k++) {
+          dst[o + k] = (src[a + k] * (1 - fx) + src[b + k] * fx) * (1 - fy) + (src[c + k] * (1 - fx) + src[d + k] * fx) * fy;
+        }
+        dst[o + 3] = 255;
+      }
+    }
+    return dst;
+  }
+  // jsQR échoue de façon systématique pour certaines tailles de module (ex. 9 px) alors qu'il lit
+  // la même image à une autre échelle : si la lecture échoue, on réessaie à 1,5× puis à 0,67×.
+  function decodeCrop(sub, ww, hh, jsQRfn) {
+    var opts = { inversionAttempts: "dontInvert" };
+    var res = jsQRfn(sub, ww, hh, opts);
+    if (res || Math.min(ww, hh) < 150) return res;
+    var scales = [1.5, 0.67];
+    for (var i = 0; i < scales.length && !res; i++) {
+      var nw = Math.round(ww * scales[i]), nh = Math.round(hh * scales[i]);
+      res = jsQRfn(resample(sub, ww, hh, nw, nh), nw, nh, opts);
+    }
+    return res;
+  }
   function scanImage(rgba, w, h, jsQRfn) {
     var out = [];
     function add(t) { if (out.indexOf(t) < 0) out.push(t); }
     var opts = { inversionAttempts: "dontInvert" };
     var blobs = findBlobs(rgba, w, h);
     if (blobs.length === 0) { // rien repéré : dernière chance, on laisse jsQR chercher dans toute l'image
-      var r0 = jsQRfn(rgba, w, h, opts);
+      var r0 = decodeCrop(rgba, w, h, jsQRfn);
       if (r0) add(r0.data);
       return out;
     }
     blobs.forEach(function (b) {
       var ww = b.x1 - b.x0, hh = b.y1 - b.y0, sub = new Uint8ClampedArray(ww * hh * 4);
       for (var y = 0; y < hh; y++) sub.set(rgba.subarray(((b.y0 + y) * w + b.x0) * 4, ((b.y0 + y) * w + b.x1) * 4), y * ww * 4);
-      var res = jsQRfn(sub, ww, hh, opts);
+      var res = decodeCrop(sub, ww, hh, jsQRfn);
       if (res) add(res.data);
     });
     return out;
   }
 
   return { makeSession: makeSession, Receiver: Receiver, chooseVersion: chooseVersion,
-           renderScreen: renderScreen, scanImage: scanImage, neighbors: neighbors,
+           renderScreen: renderScreen, scanImage: scanImage, resample: resample, neighbors: neighbors,
            b45enc: b45enc, b45dec: b45dec, sha256: sha256, META_EVERY: META_EVERY };
 })();
 if (typeof module !== "undefined") module.exports = Semaphore;
